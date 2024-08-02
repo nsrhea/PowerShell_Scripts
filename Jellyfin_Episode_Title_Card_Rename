@@ -1,0 +1,62 @@
+#Set the path to the folder you want to search
+$folderPath = "PUT YOUR FOLDER PATH HERE"
+
+#Define the regex pattern to match
+$regexPattern = 'S([0-9]{1,2})\s*E([0-9]{1,2})'
+
+#Get all image and video files in the folder and subfolders (you can add more extensions if needed)
+$imageExtensions = @("*.jpg", "*.jpeg", "*.png")
+$videoExtensions = @("*.mkv", "*.mp4", "*.avi", "*.mov", "*.mpg")
+
+#Create a hashtable to store matched video files
+$videoFilesHash = @{}
+
+#Loop through each video extension and search for matching files
+foreach ($extension in $videoExtensions) {
+    $videoFiles = Get-ChildItem -Path $folderPath -Filter $extension -Recurse
+    
+    foreach ($file in $videoFiles) {
+        if ($file.Name -match $regexPattern) {
+            $season = $matches[1].PadLeft(2, '0')
+            $episode = $matches[2].PadLeft(2, '0')
+            $key = "S${season}E${episode}"
+            Write-Host "Matched video: $($file.Name) with key: " -NoNewline
+            Write-Host "$key" -ForegroundColor Green
+            $videoFilesHash[$key] = $file.Name
+        }
+    }
+}
+
+#Loop through each image extension and search for matching files
+foreach ($extension in $imageExtensions) {
+    $imageFiles = Get-ChildItem -Path $folderPath -Filter $extension -Recurse
+    
+    foreach ($file in $imageFiles) {
+        if ($file.Name -ne "folder$($file.Extension)" -and $file.Name -match $regexPattern) {
+            $season = $matches[1].PadLeft(2, '0')
+            $episode = $matches[2].PadLeft(2, '0')
+            $key = "S${season}E${episode}"
+            Write-Host "Matched image: $($file.Name) with key: " -NoNewLine -ForegroundColor White
+            Write-Host "$key" -ForegroundColor Green
+            
+            if ($videoFilesHash.ContainsKey($key)) {
+                # Extract video file name without extension
+                $videoFileName = [System.IO.Path]::GetFileNameWithoutExtension($videoFilesHash[$key])
+                # Create new file name with the video file name but keeping the image file extension and adding "-thumb"
+                $newFileName = "${videoFileName}-thumb$($file.Extension)"
+                # Define full path for the new file name
+                $newFilePath = Join-Path -Path $folderPath -ChildPath $newFileName
+                
+                # Rename the file
+                Rename-Item -Path $file.FullName -NewName $newFileName
+                Write-Host "Renamed '$($file.FullName)'" -NoNewline -ForegroundColor Yellow
+                Write-Host " to " -NoNewline -ForegroundColor White
+                Write-Host " '$newFilePath'" -ForegroundColor Cyan
+            } else {
+                Write-Host "No matching video found for image: $($file.Name)" -ForegroundColor Red
+            }
+        } else {
+            Write-Host  "Image file does not match regex or is named 'folder': $($file.Name)" -ForegroundColor Red
+        }
+    }
+}
