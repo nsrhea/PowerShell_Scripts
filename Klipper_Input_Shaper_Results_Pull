@@ -1,0 +1,164 @@
+<#
+    You need to update the variables for this to work.
+    VoronHostIP = your voron ip
+    username = klipper logon name
+    password = klipper logon password - Don't store in plain text, unless YOLO
+    LocalPath = where you want to save your script, preferably not somewhere with rights issues like your desktop.
+
+#>
+
+
+# Load WinSCP .NET Assembly
+Add-Type -Path "C:\Program Files (x86)\WinSCP\WinSCPnet.dll"
+
+# Define Connection Parameters
+$VoronHostIP = "voron_klipper_IP_address"
+$Username = "your_username"
+$Password = "your_password"  # Consider using SecureString for security
+$LocalPath = "target_folder_for_saves_NOT_DESKTOP"
+$RemoteOutputX = "/tmp/shaper_calibrate_x.png"
+$RemoteOutputY = "/tmp/shaper_calibrate_y.png"
+$RemoteLogX = "/tmp/script_log_x.txt"
+$RemoteLogY = "/tmp/script_log_y.txt"
+$LogPath = "C:\Temp\WinSCP-Session.log"
+
+# Ensure Log Directory Exists
+if (!(Test-Path "C:\Temp")) {
+    New-Item -Path "C:\Temp" -ItemType Directory | Out-Null
+}
+
+# Ensure LocalPath Exists
+if (!(Test-Path $LocalPath)) {
+    New-Item -Path $LocalPath -ItemType Directory | Out-Null
+}
+
+# Generate Timestamp for Naming
+$Time = Get-Date -Format "HHmm"
+$Date = Get-Date -Format "ddMMMyy"   # Day, 3-letter month, last 2 digits of year (e.g., 18MAR24)
+
+$LocalFileX = "$LocalPath\${Time}_calibrate_x_${Date}.png"
+$LocalFileY = "$LocalPath\${Time}_calibrate_y_${Date}.png"
+
+# Initialize a WinSCP Session
+$sessionOptions = New-Object WinSCP.SessionOptions -Property @{
+    Protocol = [WinSCP.Protocol]::Sftp   # Using SFTP
+    HostName = $VoronHostIP
+    UserName = $Username
+    Password = $Password
+    SshHostKeyPolicy = [WinSCP.SshHostKeyPolicy]::GiveUpSecurityAndAcceptAny
+}
+
+$session = New-Object WinSCP.Session
+
+# Enable logging in a writable directory
+$session.SessionLogPath = $LogPath
+
+try {
+    Write-Host "Connecting to your Voron at " -NoNewline
+    Write-Host "$VoronHostIP" -ForegroundColor Cyan
+    $session.Open($sessionOptions)
+
+    # Ensure the script converts and downloads the most recent CSV
+    Write-Host "Converting .csv files to .png"
+
+    Start-Sleep -Seconds 3
+
+    Write-Host "Waiting for PNG files to be fully created..." -ForegroundColor Yellow
+    
+
+    # Fix escaping issues and ensure logs are always generated
+    $commandX = 'latest_x=$(ls -t /tmp/calibration_data_x_*.csv 2>/dev/null | head -n 1); if [ -f "$latest_x" ]; then /usr/bin/python3.9 /home/' + $Username + '/klipper/scripts/calibrate_shaper.py "$latest_x" -o ' + $RemoteOutputX + ' > ' + $RemoteLogX + ' 2>&1; echo "INFO: Successfully processed $latest_x" >> ' + $RemoteLogX + '; else echo "ERROR: No CSV files found for X" > ' + $RemoteLogX + '; fi'
+    
+    $commandY = 'latest_y=$(ls -t /tmp/calibration_data_y_*.csv 2>/dev/null | head -n 1); if [ -f "$latest_y" ]; then /usr/bin/python3.9 /home/' + $Username + '/klipper/scripts/calibrate_shaper.py "$latest_y" -o ' + $RemoteOutputY + ' > ' + $RemoteLogY + ' 2>&1; echo "INFO: Successfully processed $latest_y" >> ' + $RemoteLogY + '; else echo "ERROR: No CSV files found for Y" > ' + $RemoteLogY + '; fi'
+
+    $fullCommand = "$commandX && $commandY"
+    $session.ExecuteCommand($fullCommand) | Out-Null
+
+    Start-Sleep -Seconds 5    
+
+    Write-Host "Retrieving script logs from " -NoNewline
+    Write-Host "$VoronHostIP" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Download logs from remote machine
+    $logDownloadX = $session.GetFiles($RemoteLogX, "$LocalPath\script_log_x.txt", $True)
+    $logDownloadY = $session.GetFiles($RemoteLogY, "$LocalPath\script_log_y.txt", $True)
+
+    if (-not $logDownloadX.IsSuccess) {
+        Write-Host "ERROR: Could not retrieve script_log_x.txt" -ForegroundColor Red
+    }
+    if (-not $logDownloadY.IsSuccess) {
+        Write-Host "ERROR: Could not retrieve script_log_y.txt" -ForegroundColor Red
+    }
+
+    # 🛠 **Format Remote Output Dynamically**
+    function Format-OutputLine {
+        param ($line, $maxWidth)
+        $paddedLine = $line.PadRight($maxWidth, " ")  
+        Write-Host $paddedLine -ForegroundColor White -BackgroundColor Black
+    }
+
+    function Print-Section {
+        param ($Title, $FilePath)
+
+        $content = if (Test-Path $FilePath) { Get-Content $FilePath } else { @("No output received for $Title.") }
+        $maxLength = ($content | Measure-Object -Maximum Length).Maximum + 8  
+
+        # Dynamically create separator lines
+        $separator = "═" * $maxLength  
+        $titleCentered = $Title.PadLeft(([math]::Ceiling(($maxLength + $Title.Length) / 2)), " ").PadRight($maxLength, " ")
+
+        Write-Host $separator -ForegroundColor White -BackgroundColor Black
+        Write-Host $titleCentered -ForegroundColor White -BackgroundColor Black
+        Write-Host $separator -ForegroundColor White -BackgroundColor Black
+
+        # Print log content
+        $content | ForEach-Object { Format-OutputLine $_ $maxLength }
+
+        Write-Host $separator -ForegroundColor White -BackgroundColor Black
+    }
+
+    # 🛠 **Display X and Y Outputs Separately**
+    Print-Section "KLIPPER COMMAND OUTPUT (X AXIS)" "$LocalPath\script_log_x.txt"
+    Print-Section "RLIPPER COMMAND OUTPUT (Y AXIS)" "$LocalPath\script_log_y.txt"
+
+    Write-Host ""
+
+    Write-Host "Attempting to download PNG files from " -NoNewline
+    Write-Host "$VoronHostIP" -NoNewLine -ForegroundColor Cyan
+    Write-Host " to " -NoNewline
+    Write-Host "$LocalPath" -ForegroundColor Green
+
+    $downloadResultX = $session.GetFiles($RemoteOutputX, "$LocalPath\shaper_calibrate_x.png", $True)
+    $downloadResultY = $session.GetFiles($RemoteOutputY, "$LocalPath\shaper_calibrate_y.png", $True)
+
+    # Check if downloads were successful
+    if ($downloadResultX.IsSuccess -and (Test-Path "$LocalPath\shaper_calibrate_x.png")) {
+        Rename-Item -Path "$LocalPath\shaper_calibrate_x.png" -NewName "${Time}_calibrate_x_${Date}.png"
+        Write-Host "Downloaded and renamed:" -NoNewline -ForegroundColor Green
+        Write-Host " $LocalFileX"
+    }
+    else {
+        Write-Host "ERROR: Failed to download shaper_calibrate_x.png" -ForegroundColor Red
+    }
+
+    if ($downloadResultY.IsSuccess -and (Test-Path "$LocalPath\shaper_calibrate_y.png")) {
+        Rename-Item -Path "$LocalPath\shaper_calibrate_y.png" -NewName "${Time}_calibrate_y_${Date}.png"
+        Write-Host "Downloaded and renamed:" -NoNewline -ForegroundColor Green
+        Write-Host " $LocalFileY"
+    }
+    else {
+        Write-Host "ERROR: Failed to download shaper_calibrate_y.png" -ForegroundColor Red
+    }
+
+    Write-Host "WinSCP log saved to: $LogPath"
+
+}
+catch {
+    Write-Host "Error: $_" -ForegroundColor Red
+}
+finally {
+    $session.Dispose()
+    Write-Host ""
+    Write-Host "SESSION CLOSED." -ForegroundColor DarkRed -BackgroundColor White
+}
